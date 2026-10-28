@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Base Admin</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --ink:#1c2033; --muted:#6b7086; --brand:#3b4fd8; --brand-ink:#fff; --line:#e3e5ef; --warn:#b54a3a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#10121b; --card:#181b28; --ink:#e8eaf4; --muted:#979cb6; --brand:#7d8cff; --brand-ink:#0d1030; --line:#272b3d; --warn:#ec8a78; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:1000px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 14px; } h2 { font-size:15px; margin:20px 0 8px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  input, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
+  button.p { background:var(--brand); color:var(--brand-ink); border:0; font-weight:600; cursor:pointer; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-top:14px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .stat b { display:block; font-size:22px; font-variant-numeric:tabular-nums; } .stat span { color:var(--muted); font-size:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; min-width:560px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; }
+  #msg { color:var(--warn); }
+  pre { white-space:pre-wrap; margin:0; font:inherit; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Knowledge Base Admin</h1>
+  <div class="bar">
+    <input id="tok" type="password" placeholder="Admin token">
+    <button class="p" id="load">Load</button>
+    <input id="file" type="file" accept=".pdf,.txt,.md">
+    <button id="up">Upload</button>
+    <span id="msg"></span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <h2>Documents</h2>
+  <div class="card"><table><thead><tr><th>Name</th><th>Chunks</th><th>Added</th><th></th></tr></thead><tbody id="docs"></tbody></table></div>
+  <h2>Test retrieval</h2>
+  <div class="bar"><input id="sq" placeholder="Type a student question" style="flex:1"><button id="sb">Search</button></div>
+  <div class="card" style="margin-top:8px"><table><thead><tr><th>Score</th><th>Source</th><th>Text</th></tr></thead><tbody id="sr"></tbody></table></div>
+  <h2>Knowledge gaps (unanswered or marked not helpful)</h2>
+  <div class="card"><table><thead><tr><th>When</th><th>Question</th><th>Bot answer</th></tr></thead><tbody id="gaps"></tbody></table></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+try { $('tok').value = localStorage.getItem('rag_tok') || ''; } catch (e) {}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { 'X-Admin-Token': $('tok').value, ...(opts.headers || {}) } });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+const row = cells => { const tr = document.createElement('tr'); cells.forEach(c => { const td = document.createElement('td'); if (c instanceof Node) td.appendChild(c); else td.textContent = c ?? ''; tr.appendChild(td); }); return tr; };
+const pre = t => { const p = document.createElement('pre'); p.textContent = t; return p; };
+
+async function load() {
+  $('msg').textContent = '';
+  try { localStorage.setItem('rag_tok', $('tok').value); } catch (e) {}
+  try {
+    const s = await api('/api/admin/stats');
+    const L = { documents:'Documents', chunks:'Chunks', questions:'Questions asked', answered_pct:'Answered %', helpful:'Helpful', not_helpful:'Not helpful' };
+    $('stats').innerHTML = '';
+    for (const [k, l] of Object.entries(L)) { const d = document.createElement('div'); d.className = 'stat'; const b = document.createElement('b'); b.textContent = s[k]; const sp = document.createElement('span'); sp.textContent = l; d.append(b, sp); $('stats').appendChild(d); }
+    $('docs').innerHTML = '';
+    for (const d of await api('/api/admin/documents')) {
+      const del = document.createElement('button'); del.textContent = 'Delete';
+      del.onclick = async () => { await api('/api/admin/documents/' + d.id, { method:'DELETE' }); load(); };
+      $('docs').appendChild(row([d.name, d.n_chunks, d.created_at, del]));
+    }
+    $('gaps').innerHTML = '';
+    const g = await api('/api/admin/gaps');
+    if (!g.length) $('gaps').appendChild(row(['—', 'No gaps yet', '']));
+    g.forEach(q => $('gaps').appendChild(row([q.created_at, q.question, pre(q.answer)])));
+  } catch (e) { $('msg').textContent = e.message; }
+}
+$('load').onclick = load;
+$('up').onclick = async () => {
+  const f = $('file').files[0]; if (!f) { $('msg').textContent = 'Choose a file first'; return; }
+  const fd = new FormData(); fd.append('file', f);
+  $('msg').textContent = 'Uploading…';
+  try { const d = await api('/api/admin/documents', { method:'POST', body: fd }); $('msg').textContent = `Added ${d.name} (${d.n_chunks} chunks)`; load(); }
+  catch (e) { $('msg').textContent = e.message; }
+};
+$('sb').onclick = async () => {
+  try {
+    const res = await api('/api/admin/search?q=' + encodeURIComponent($('sq').value));
+    $('sr').innerHTML = '';
+    res.forEach(h => $('sr').appendChild(row([h.score, `${h.doc_name}${h.heading ? ' › ' + h.heading : ''}`, pre(h.text)])));
+  } catch (e) { $('msg').textContent = e.message; }
+};
+if ($('tok').value) load();
+</script>
+</body>
+</html>
